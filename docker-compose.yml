@@ -1,0 +1,15 @@
+version: "3.9"
+   
+services:
+  db:
+    image: postgres
+    environment:
+      - POSTGRES_PASSWORD=rocket
+  web:
+    build: .
+    environment:
+      - DATABASE_URL=postgres://postgres:rocket@db/postgres
+    depends_on:
+      - db
+    ports:
+      - "5000:5000"

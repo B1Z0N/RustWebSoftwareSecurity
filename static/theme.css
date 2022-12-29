@@ -1,0 +1,21 @@
+/* Resizes the thumbnail */
+.thumb {
+    max-width: 256px;
+    max-height: 256px;
+}
+
+/* Makes the title of an image bold in the index and results overview */
+.image-title {
+    font-weight: bold;
+}
+
+/* This adds some margins above and below the image */
+.image {
+    margin: 10px 0;
+}
+
+/* This resizes the "avatars" in front of the comments into 96x96 images */
+.media img {
+    max-width: 96px;
+    max-height: 96px;
+}
