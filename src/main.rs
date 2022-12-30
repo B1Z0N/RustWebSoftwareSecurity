@@ -265,6 +265,7 @@ async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Red
         check!(res mdfn(&mut t, id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") }); 
       }
 
+      check!(res t.commit(), Redirect::to("/error/500"));
       Redirect::to(format!("/image/{}", id))
     }).await
 }
