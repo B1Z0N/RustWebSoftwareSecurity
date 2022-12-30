@@ -9,7 +9,6 @@ use rocket_sync_db_pools::{postgres, database};
 use image::{GenericImageView};
 use image::io::Reader as ImageReader;
 use http::status::StatusCode;
-use rocket::response::status;
 
 fn error_template(code: u16) -> Template {
   let scode = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
@@ -19,48 +18,40 @@ fn error_template(code: u16) -> Template {
   })
 }
 
-macro_rules! nonereturn {
-  ( $e:expr, $ret:expr ) => {
+// check if novalue and return
+macro_rules! check {
+  (opt $e:expr, $r:expr) => {
     match $e {
       Some(v) => v,
-      None => return $ret,
+      None    => return $r,
     }
   };
-}
-macro_rules! errreturn {
-  ( $e:expr, $ret:expr ) => {
+  (res $e:expr, $r:expr) => {
     match $e {
-      Ok(v) => v,
+      Ok(v)  => v,
       Err(e) => {
-        eprintln!("{}", e);
-        return $ret;
-      }
+        eprintln!("{e:?}");
+        return $r;
+      },
     }
-  };
+  }
 }
 
 // redirect on error
-macro_rules! optredir {
-  ( $e:expr, $code:expr ) => { nonereturn!($e, Redirect::to(format!("/error/{}", $code))) };
-  ( $e:expr ) => { optredir!($e, 400) };
+macro_rules! redir {
+  ( opt $e:expr, $code:expr ) => { check!(opt $e, Redirect::to(format!("/error/{}", $code))) };
+  ( opt $e:expr ) => { redir!(opt $e, 400) };
+  ( res $e:expr, $code:expr ) => { check!(res $e, Redirect::to(format!("/error/{}", $code))) };
+  ( res $e:expr ) => { redir!(res $e, 400) };
 }
 
-macro_rules! resredir {
-  ( $e:expr, $code:expr ) => { errreturn!($e, Redirect::to(format!("/error/{}", $code))) };
-  ( $e:expr ) => { resredir!($e, 400) };
+// template on error
+macro_rules! templ {
+  ( opt $e:expr, $code:expr ) => { check!(opt $e, error_template($code)) };
+  ( opt $e:expr ) => { templ!(opt $e, 400) };
+  ( res $e:expr, $code:expr ) => { check!(res $e, error_template($code)) };
+  ( res $e:expr ) => { templ!(res $e, 400) };
 }
-
-// error template on error
-macro_rules! opttemp {
-  ( $e:expr, $code:expr ) => { nonereturn!($e, error_template($code)) };
-  ( $e:expr ) => { opttemp!($e, 400) };
-}
-
-macro_rules! restemp {
-  ( $e:expr, $code:expr ) => { errreturn!($e, error_template($code)) };
-  ( $e:expr ) => { restemp!($e, 400) };
-}
-  
 
 #[database("postgres")]
 struct MyPgDatabase(postgres::Client);
@@ -142,6 +133,12 @@ struct UploadImage<'v> {
     metadata: Option<TempFile<'v>>
 }
 
+struct ImgData {
+  width: i32,
+  height: i32,
+  buf: Vec<u8>,
+}
+
 async fn get_xml_tag(filename: &String, tagname: &String) -> Result<String, String> {
     let output = tokio::process::Command::new("xmllint")
         .arg("--noent")
@@ -154,7 +151,7 @@ async fn get_xml_tag(filename: &String, tagname: &String) -> Result<String, Stri
     String::from_utf8(stdout).map_err(|e| format!("{e:?}"))
 }
 
-async fn read_image(filename: &PathBuf) -> Result<(i32, i32, Vec<u8>), String> {
+async fn read_image(filename: &PathBuf) -> Result<ImgData, String> {
     let mut fh = rocket::tokio::fs::File::open(filename).await.map_err(|e| format!("{e:?}"))?;
     let mut buf = Vec::new();
     fh.read_to_end(&mut buf).await.map_err(|e| format!("{e:?}"))?;
@@ -164,24 +161,31 @@ async fn read_image(filename: &PathBuf) -> Result<(i32, i32, Vec<u8>), String> {
     let width = i32::try_from(image.width()).map_err(|e| format!("{e:?}"))?;
     let height = i32::try_from(image.height()).map_err(|e| format!("{e:?}"))?;
     drop(fh);
-    return Ok((width, height, buf));
+    return Ok(ImgData{width, height, buf});
 }
 
 #[post("/image/<imageid>/comments/post", data= "<comment>")]
 async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -> Redirect {
-    resredir!(conn.run(move |conn| {
+    redir!(res conn.run(move |conn| {
         conn.query("INSERT INTO comments (image_id, user_name, comment) VALUES ($1, $2, $3)", 
             &[& imageid, &comment.user_name, &comment.comment])
     }).await);
     Redirect::to(format!("/image/{}", imageid))
 }
 
-#[post("/upload", data = "<form>")]
-async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Redirect {
-    let some_path = std::env::temp_dir().join(optredir!(form.file.name()));
-    resredir!(form.file.persist_to(&some_path).await);
-    let (mut width, mut height, mut buf) = resredir!(read_image(&some_path).await);
-    if std::cmp::max(width, height) > 2048 {
+
+async fn img2jpg(form: &mut Form<UploadImage<'_>>) 
+  -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<i32, String>, Redirect> 
+{
+    macro_rules! mycheck {
+        ( opt $e:expr ) => { check!(opt $e, Err(Redirect::to(format!("/error/400")))) };
+        ( res $e:expr ) => { check!(res $e, Err(Redirect::to(format!("/error/400")))) };
+    } 
+
+    let some_path = std::env::temp_dir().join(mycheck!(opt form.file.name()));
+    mycheck!(res form.file.persist_to(&some_path).await);
+    let mut img = mycheck!(res read_image(&some_path).await);
+    if std::cmp::max(img.width, img.height) > 2048 {
         let command = format!(
             "convert -scale 2048x2048 -quality 90 {} {}/out.jpg; cp {}/out.jpg {}; rm {}/out.jpg", 
             &some_path.display(), 
@@ -191,51 +195,78 @@ async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Red
             std::env::temp_dir().display()
         );
         println!("{}", &command);
-        let _command_result = resredir!(
+        let _command_result = mycheck!(res
             tokio::process::Command::new("sh").arg("-c").arg(&command).spawn()
         ).wait().await;
-        let (newwidth, newheight, newbuf) = resredir!(read_image(&some_path).await);
-        buf = newbuf;
-        height = newheight;
-        width = newwidth;
+        img = mycheck!(res read_image(&some_path).await);
     }
-    resredir!(rocket::tokio::fs::remove_file(&some_path).await);
+    mycheck!(res rocket::tokio::fs::remove_file(&some_path).await);
 
     let title = form.title.clone();
-    let path = String::from(optredir!(form.file.name()));
+    let path = String::from(mycheck!(opt form.file.name()));
     let private = form.private.clone();
-    let v = resredir!(
-        conn.run(move |conn| {
-            conn.query("INSERT INTO images (title, path, width, height, private, content) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id", 
-                &[& title, &path, &width, &height, &private, &buf])
-        }).await);
-    let id: i32 = optredir!(v.get(0)).get(0);
     
+    return Ok(move |transaction: &mut postgres::Transaction| {
+        let res = transaction.query(
+            "INSERT INTO images (title, path, width, height, private, content) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id", 
+            &[&title, &path, &img.width, &img.height, &private, &img.buf]).map_err(|e| e.to_string())?;
+        return Ok(res.get(0).ok_or("Can't get id while inserting!")?.get(0));
+    });
+}
+
+async fn metadata(form: &mut Form<UploadImage<'_>>)
+  -> Result<Option<impl FnOnce(&mut postgres::Transaction, i32) -> Result<(), String>>, Redirect> 
+{
+    macro_rules! mycheck {
+        ( opt $e:expr ) => { check!(opt $e, Err(Redirect::to(format!("/error/400")))) };
+        ( res $e:expr ) => { check!(res $e, Err(Redirect::to(format!("/error/400")))) };
+    }
+
     if let Some(metadata) = &mut form.metadata {
         let name_result = metadata.name();
         if name_result.is_some() {
-            let name = optredir!(name_result);
+            let name = mycheck!(opt name_result);
             let metadata_path = format!("{}", std::env::temp_dir().join(name).display());
-            resredir!(metadata.persist_to(&metadata_path).await);
+            mycheck!(res metadata.persist_to(&metadata_path).await);
             
-            let creation_time: f64 = resredir!(get_xml_tag(&metadata_path, &String::from("creationTime")).await).parse().unwrap_or_else(|_| 0.0);
-            let camera_make = resredir!(get_xml_tag(&metadata_path, &String::from("cameraMake")).await);
-            let camera_model = resredir!(get_xml_tag(&metadata_path, &String::from("cameraModel")).await);
-            let orientation: i32 = resredir!(get_xml_tag(&metadata_path, &String::from("orientation")).await).parse().unwrap_or_else(|_| 0);
-            let horizontal_ppi: i32 = resredir!(get_xml_tag(&metadata_path, &String::from("horizontalPpi")).await).parse().unwrap_or_else(|_| 0);
-            let vertical_ppi: i32 = resredir!(get_xml_tag(&metadata_path, &String::from("verticalPpi")).await).parse().unwrap_or_else(|_| 0);
-            let shutter_speed: f64 = resredir!(get_xml_tag(&metadata_path, &String::from("shutterSpeed")).await).parse().unwrap_or_else(|_| 0.0);
-            let color_space = resredir!(get_xml_tag(&metadata_path, &String::from("colorSpace")).await);
+            let creation_time: f64 = mycheck!(res get_xml_tag(&metadata_path, &String::from("creationTime")).await).parse().unwrap_or_else(|_| 0.0);
+            let camera_make = mycheck!(res get_xml_tag(&metadata_path, &String::from("cameraMake")).await);
+            let camera_model =mycheck!(res get_xml_tag(&metadata_path, &String::from("cameraModel")).await);
+            let orientation: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("orientation")).await).parse().unwrap_or_else(|_| 0);
+            let horizontal_ppi: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("horizontalPpi")).await).parse().unwrap_or_else(|_| 0);
+            let vertical_ppi: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("verticalPpi")).await).parse().unwrap_or_else(|_| 0);
+            let shutter_speed: f64 = mycheck!(res get_xml_tag(&metadata_path, &String::from("shutterSpeed")).await).parse().unwrap_or_else(|_| 0.0);
+            let color_space = mycheck!(res get_xml_tag(&metadata_path, &String::from("colorSpace")).await);
 
-            resredir!(rocket::tokio::fs::remove_file(&metadata_path).await);
-            resredir!(conn.run(move |conn| {
-                conn.query("INSERT INTO metadata (image_id, creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", 
-                &[&id, &creation_time, &camera_make, &camera_model, &orientation, &horizontal_ppi, &vertical_ppi, &shutter_speed, &color_space])
-                
-            }).await);
+            mycheck!(res rocket::tokio::fs::remove_file(&metadata_path).await);
+            return Ok(Some(move |transaction: &mut postgres::Transaction, id: i32| {
+                transaction.query(
+                    "INSERT INTO metadata (image_id, creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", 
+                    &[&id, &creation_time, &camera_make, &camera_model, &orientation, &horizontal_ppi, &vertical_ppi, &shutter_speed, &color_space]
+                ).map_err(|e| e.to_string())?;
+                Ok(())
+            }));
         }
     }
-    Redirect::to(format!("/image/{}", id))
+
+    Ok(None) 
+}
+
+#[post("/upload", data = "<form>")]
+async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Redirect {
+    let imgfn = match img2jpg(&mut form).await { Ok(v) => v, Err(r) => return r, };
+    let metadatafn = match metadata(&mut form).await { Ok(v) => v, Err(r) => return r, };
+
+    conn.run(move |conn| -> Redirect {
+      let mut t = check!(res conn.transaction(), Redirect::to("/error/500"));
+      let id = check!(res imgfn(&mut t), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
+      if let Some(mdfn) = metadatafn {
+        check!(res mdfn(&mut t, id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") }); 
+      }
+
+      Redirect::to(format!("/image/{}", id))
+    }).await
 }
 
 #[get("/upload")]
@@ -248,9 +279,8 @@ async fn upload() -> Template {
 async fn search(conn: MyPgDatabase, q: String) -> Template {
     let mut results: Vec<ImageResult> = Vec::new();
     let qs = format!("SELECT id, path, width, height, title FROM images WHERE NOT private AND (to_tsvector('simple', title) @@ plainto_tsquery('simple', '{}'))", q);
-    let r = restemp!(conn.run(move |conn| {
+    let r = templ!(res conn.run(move |conn| {
         conn.query(&qs, &[])
-        
     }).await);
     for row in r.iter() {
         results.push(ImageResult { id: row.get(0), path: row.get(1), width: row.get(2), height: row.get(3), title: row.get(4) });
@@ -261,7 +291,7 @@ async fn search(conn: MyPgDatabase, q: String) -> Template {
 
 #[get("/image/<imageid>")]
 async fn images_name(conn: MyPgDatabase, imageid: i32) -> Template {
-    let r = restemp!(conn.run(move |conn| {
+    let r = templ!(res conn.run(move |conn| {
         conn.query_one("SELECT path, title, id FROM images WHERE id = $1", &[&imageid])
         
     }).await);
@@ -274,7 +304,7 @@ async fn images_name(conn: MyPgDatabase, imageid: i32) -> Template {
         
     }).await;
 
-    let comment_result = restemp!(conn.run(move |conn| {
+    let comment_result = templ!(res conn.run(move |conn| {
         conn.query("SELECT user_name, comment from comments where image_id = $1", &[&imageid])
     }).await);
     let mut comments: Vec<ImageComment> = Vec::new();
