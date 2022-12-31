@@ -16,6 +16,7 @@ use image::io::Reader as ImageReader;
 // My
 #[macro_use] mod utils;
 use crate::utils::metadata::MetaData;
+use crate::utils::image::convert as image_convert;
 
 // Misc
 use http::status::StatusCode;
@@ -152,24 +153,11 @@ async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -
 async fn img2jpg(form: &mut Form<UploadImage<'_>>) 
   -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<i32, String>, Redirect> 
 {
-    let some_path = std::env::temp_dir().join(redir!(opt form.file.name() => Err));
-    redir!(res form.file.persist_to(&some_path).await => Err);
-    let mut img = redir!(res read_image(&some_path).await => Err);
-    if std::cmp::max(img.width, img.height) > 2048 {
-        let command = format!(
-            "convert -scale 2048x2048 -quality 90 {} {}/out.jpg; cp {}/out.jpg {}; rm {}/out.jpg", 
-            &some_path.display(), 
-            std::env::temp_dir().display(), 
-            std::env::temp_dir().display(), 
-            &some_path.display(), 
-            std::env::temp_dir().display()
-        );
-        println!("{}", &command);
-        let _command_result = redir!(res
-            tokio::process::Command::new("sh").arg("-c").arg(&command).spawn() => Err).wait().await;
-        img = redir!(res read_image(&some_path).await => Err);
-    }
-    redir!(res rocket::tokio::fs::remove_file(&some_path).await => Err);
+    let imgpath = std::env::temp_dir().join(redir!(opt form.file.name() => Err));
+    redir!(res form.file.persist_to(&imgpath).await => Err);
+    redir!(res image_convert(imgpath.as_path(), (2048, 2048), true) => Err);
+    let img = redir!(res read_image(&imgpath).await => Err);
+    redir!(res rocket::tokio::fs::remove_file(&imgpath).await => Err);
 
     let title = form.title.clone();
     let path = String::from(redir!(opt form.file.name() => Err));

@@ -11,6 +11,7 @@ tokio-postgres = "0.7.5"
 image = "0.23.14"
 http = "0.2.8"
 minidom = "0.15.0"
+image-convert = "0.13.0"
 
 [dependencies.tokio]
 version = "1.22.0"
