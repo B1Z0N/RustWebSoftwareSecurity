@@ -1,14 +1,25 @@
+// Rocket
 #[macro_use] extern crate rocket;
-extern crate image;
-
 use rocket::figment::{value::{Map, Value}, util::map};
-use std::{collections::HashMap, path::PathBuf};
 use rocket::{fs::{FileServer, TempFile}, fairing::{AdHoc}, Rocket, Build, serde::{Serialize, Deserialize}, response::Redirect, form::Form, tokio::io::AsyncReadExt, http::ContentType};
 use rocket_dyn_templates::{Template, context};
 use rocket_sync_db_pools::{postgres, database};
+
+// Std 
+use std::{collections::HashMap, path::PathBuf};
+
+// Image processing
+extern crate image;
 use image::{GenericImageView};
 use image::io::Reader as ImageReader;
+
+// My
+mod utils;
+use crate::utils::metadata::MetaData;
+
+// Misc
 use http::status::StatusCode;
+
 
 fn error_template(code: u16) -> Template {
   let scode = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
@@ -139,18 +150,6 @@ struct ImgData {
   buf: Vec<u8>,
 }
 
-async fn get_xml_tag(filename: &String, tagname: &String) -> Result<String, String> {
-    let output = tokio::process::Command::new("xmllint")
-        .arg("--noent")
-        .arg("--xpath")
-        .arg(format!("//MetaData/{}/text()", tagname))
-        .arg(filename)
-        .output()
-        .await.map_err(|e| format!("{e:?}"))?;
-    let stdout = output.stdout;
-    String::from_utf8(stdout).map_err(|e| format!("{e:?}"))
-}
-
 async fn read_image(filename: &PathBuf) -> Result<ImgData, String> {
     let mut fh = rocket::tokio::fs::File::open(filename).await.map_err(|e| format!("{e:?}"))?;
     let mut buf = Vec::new();
@@ -226,24 +225,17 @@ async fn metadata(form: &mut Form<UploadImage<'_>>)
         let name_result = metadata.name();
         if name_result.is_some() {
             let name = mycheck!(opt name_result);
-            let metadata_path = format!("{}", std::env::temp_dir().join(name).display());
-            mycheck!(res metadata.persist_to(&metadata_path).await);
-            
-            let creation_time: f64 = mycheck!(res get_xml_tag(&metadata_path, &String::from("creationTime")).await).parse().unwrap_or_else(|_| 0.0);
-            let camera_make = mycheck!(res get_xml_tag(&metadata_path, &String::from("cameraMake")).await);
-            let camera_model =mycheck!(res get_xml_tag(&metadata_path, &String::from("cameraModel")).await);
-            let orientation: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("orientation")).await).parse().unwrap_or_else(|_| 0);
-            let horizontal_ppi: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("horizontalPpi")).await).parse().unwrap_or_else(|_| 0);
-            let vertical_ppi: i32 = mycheck!(res get_xml_tag(&metadata_path, &String::from("verticalPpi")).await).parse().unwrap_or_else(|_| 0);
-            let shutter_speed: f64 = mycheck!(res get_xml_tag(&metadata_path, &String::from("shutterSpeed")).await).parse().unwrap_or_else(|_| 0.0);
-            let color_space = mycheck!(res get_xml_tag(&metadata_path, &String::from("colorSpace")).await);
+            let path = format!("{}", std::env::temp_dir().join(name).display());
+            mycheck!(res metadata.persist_to(&path).await);
 
-            mycheck!(res rocket::tokio::fs::remove_file(&metadata_path).await);
+            let md = mycheck!(res MetaData::parse(mycheck!(res std::fs::read_to_string(&path)))); 
+
+            mycheck!(res rocket::tokio::fs::remove_file(&path).await);
             return Ok(Some(move |transaction: &mut postgres::Transaction, id: i32| {
                 transaction.query(
                     "INSERT INTO metadata (image_id, creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", 
-                    &[&id, &creation_time, &camera_make, &camera_model, &orientation, &horizontal_ppi, &vertical_ppi, &shutter_speed, &color_space]
+                    &[&id, &md.creation_time, &md.camera_make, &md.camera_model, &md.orientation, &md.horizontal_ppi, &md.vertical_ppi, &md.shutter_speed, &md.color_space]
                 ).map_err(|e| e.to_string())?;
                 Ok(())
             }));
