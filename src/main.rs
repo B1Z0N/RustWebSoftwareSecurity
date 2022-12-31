@@ -14,13 +14,14 @@ use image::{GenericImageView};
 use image::io::Reader as ImageReader;
 
 // My
-mod utils;
+#[macro_use] mod utils;
 use crate::utils::metadata::MetaData;
 
 // Misc
 use http::status::StatusCode;
 
 
+// Macro definitions
 fn error_template(code: u16) -> Template {
   let scode = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
   Template::render("error", context! { 
@@ -28,40 +29,15 @@ fn error_template(code: u16) -> Template {
     code: code 
   })
 }
-
-// check if novalue and return
-macro_rules! check {
-  (opt $e:expr, $r:expr) => {
-    match $e {
-      Some(v) => v,
-      None    => return $r,
-    }
-  };
-  (res $e:expr, $r:expr) => {
-    match $e {
-      Ok(v)  => v,
-      Err(e) => {
-        eprintln!("{e:?}");
-        return $r;
-      },
-    }
-  }
-}
-
-// redirect on error
-macro_rules! redir {
-  ( opt $e:expr, $code:expr ) => { check!(opt $e, Redirect::to(format!("/error/{}", $code))) };
-  ( opt $e:expr ) => { redir!(opt $e, 400) };
-  ( res $e:expr, $code:expr ) => { check!(res $e, Redirect::to(format!("/error/{}", $code))) };
-  ( res $e:expr ) => { redir!(res $e, 400) };
-}
-
-// template on error
 macro_rules! templ {
-  ( opt $e:expr, $code:expr ) => { check!(opt $e, error_template($code)) };
-  ( opt $e:expr ) => { templ!(opt $e, 400) };
-  ( res $e:expr, $code:expr ) => { check!(res $e, error_template($code)) };
-  ( res $e:expr ) => { templ!(res $e, 400) };
+  ($($e:tt)*) => { http_code!(error_template $($e)*) };  
+}
+
+fn error_redirect(code: u16) -> Redirect {
+  Redirect::to(format!("/error/{}", code))
+}
+macro_rules! redir {
+  ($($e:tt)*) => { http_code!(error_redirect $($e)*) };
 }
 
 #[database("postgres")]
@@ -176,14 +152,9 @@ async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -
 async fn img2jpg(form: &mut Form<UploadImage<'_>>) 
   -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<i32, String>, Redirect> 
 {
-    macro_rules! mycheck {
-        ( opt $e:expr ) => { check!(opt $e, Err(Redirect::to(format!("/error/400")))) };
-        ( res $e:expr ) => { check!(res $e, Err(Redirect::to(format!("/error/400")))) };
-    } 
-
-    let some_path = std::env::temp_dir().join(mycheck!(opt form.file.name()));
-    mycheck!(res form.file.persist_to(&some_path).await);
-    let mut img = mycheck!(res read_image(&some_path).await);
+    let some_path = std::env::temp_dir().join(redir!(opt form.file.name() => Err));
+    redir!(res form.file.persist_to(&some_path).await => Err);
+    let mut img = redir!(res read_image(&some_path).await => Err);
     if std::cmp::max(img.width, img.height) > 2048 {
         let command = format!(
             "convert -scale 2048x2048 -quality 90 {} {}/out.jpg; cp {}/out.jpg {}; rm {}/out.jpg", 
@@ -194,15 +165,14 @@ async fn img2jpg(form: &mut Form<UploadImage<'_>>)
             std::env::temp_dir().display()
         );
         println!("{}", &command);
-        let _command_result = mycheck!(res
-            tokio::process::Command::new("sh").arg("-c").arg(&command).spawn()
-        ).wait().await;
-        img = mycheck!(res read_image(&some_path).await);
+        let _command_result = redir!(res
+            tokio::process::Command::new("sh").arg("-c").arg(&command).spawn() => Err).wait().await;
+        img = redir!(res read_image(&some_path).await => Err);
     }
-    mycheck!(res rocket::tokio::fs::remove_file(&some_path).await);
+    redir!(res rocket::tokio::fs::remove_file(&some_path).await => Err);
 
     let title = form.title.clone();
-    let path = String::from(mycheck!(opt form.file.name()));
+    let path = String::from(redir!(opt form.file.name() => Err));
     let private = form.private.clone();
     
     return Ok(move |transaction: &mut postgres::Transaction| {
@@ -216,21 +186,16 @@ async fn img2jpg(form: &mut Form<UploadImage<'_>>)
 async fn metadata(form: &mut Form<UploadImage<'_>>)
   -> Result<Option<impl FnOnce(&mut postgres::Transaction, i32) -> Result<(), String>>, Redirect> 
 {
-    macro_rules! mycheck {
-        ( opt $e:expr ) => { check!(opt $e, Err(Redirect::to(format!("/error/400")))) };
-        ( res $e:expr ) => { check!(res $e, Err(Redirect::to(format!("/error/400")))) };
-    }
-
     if let Some(metadata) = &mut form.metadata {
         let name_result = metadata.name();
         if name_result.is_some() {
-            let name = mycheck!(opt name_result);
+            let name = redir!(opt name_result => Err);
             let path = format!("{}", std::env::temp_dir().join(name).display());
-            mycheck!(res metadata.persist_to(&path).await);
+            redir!(res metadata.persist_to(&path).await => Err);
 
-            let md = mycheck!(res MetaData::parse(mycheck!(res std::fs::read_to_string(&path)))); 
+            let md = redir!(res MetaData::parse(redir!(res std::fs::read_to_string(&path) => Err)) => Err); 
 
-            mycheck!(res rocket::tokio::fs::remove_file(&path).await);
+            redir!(res rocket::tokio::fs::remove_file(&path).await => Err);
             return Ok(Some(move |transaction: &mut postgres::Transaction, id: i32| {
                 transaction.query(
                     "INSERT INTO metadata (image_id, creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space) \
@@ -251,13 +216,13 @@ async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Red
     let metadatafn = match metadata(&mut form).await { Ok(v) => v, Err(r) => return r, };
 
     conn.run(move |conn| -> Redirect {
-      let mut t = check!(res conn.transaction(), Redirect::to("/error/500"));
-      let id = check!(res imgfn(&mut t), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
+      let mut t = null!(res conn.transaction(), Redirect::to("/error/500"));
+      let id = null!(res imgfn(&mut t), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
       if let Some(mdfn) = metadatafn {
-        check!(res mdfn(&mut t, id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") }); 
+        null!(res mdfn(&mut t, id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") }); 
       }
 
-      check!(res t.commit(), Redirect::to("/error/500"));
+      null!(res t.commit(), Redirect::to("/error/500"));
       Redirect::to(format!("/image/{}", id))
     }).await
 }
