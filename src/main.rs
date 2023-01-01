@@ -23,6 +23,7 @@ use http::status::StatusCode;
 
 
 // Macro definitions
+define_http!($ error_template templ);
 fn error_template(code: u16) -> Template {
   let scode = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
   Template::render("error", context! { 
@@ -30,15 +31,10 @@ fn error_template(code: u16) -> Template {
     code: code 
   })
 }
-macro_rules! templ {
-  ($($e:tt)*) => { http_code!(error_template $($e)*) };  
-}
 
+define_http!($ error_redirect redir);
 fn error_redirect(code: u16) -> Redirect {
   Redirect::to(format!("/error/{}", code))
-}
-macro_rules! redir {
-  ($($e:tt)*) => { http_code!(error_redirect $($e)*) };
 }
 
 #[database("postgres")]

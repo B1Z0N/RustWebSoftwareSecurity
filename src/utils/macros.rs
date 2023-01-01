@@ -55,3 +55,15 @@ macro_rules! http_code {
   ($gen:ident res $e:expr) => { http_code!($gen res $e => 400) };
 }
 
+#[macro_export]
+macro_rules! define_http {
+  // "dollar" hack to overcome higher-order macro limitations
+  // https://github.com/rust-lang/rust/issues/35853#issuecomment-415993963
+  ($dollar:tt $code_getter:ident $macro_name:ident) => {
+    macro_rules! $macro_name {
+      ($dollar($dollar args:tt)*) => {
+        http_code!($code_getter $dollar($dollar args)*)
+      };
+    }
+  };
+}
