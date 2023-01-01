@@ -5,7 +5,7 @@ use rocket::{Request, Response};
 pub struct CSP {}
 
 impl CSP {
-  const HEADERS: &'static str = r#"default-src 'none'; img-src 'self'; style-src 'self' https://stackpath.bootstrapcdn.com; script-src 'self' https://stackpath.bootstrapcdn.com https://cdnjs.cloudflare.com https://code.jquery.com; object-src 'none'; frame-ancestors: 'none'; form-action 'self';"#;
+  const HEADERS: &'static str = r#"default-src 'none'; img-src 'self'; style-src 'self' https://stackpath.bootstrapcdn.com; script-src 'self' https://stackpath.bootstrapcdn.com https://cdnjs.cloudflare.com https://code.jquery.com; object-src 'none'; frame-ancestors 'none'; form-action 'self';"#;
 }
 
 #[rocket::async_trait]
