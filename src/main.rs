@@ -23,10 +23,12 @@ use std::collections::HashMap;
 // My
 #[macro_use]
 mod utils;
-use crate::utils::image::convert as image_convert;
-use crate::utils::image::read_image;
-use crate::utils::metadata::MetaData;
-use crate::utils::sanitizers::{html_sanity, psql_sanity};
+use crate::utils::{
+  fairings::CSP,
+  image::{convert as image_convert, read_image},
+  metadata::MetaData,
+  sanitizers::{html_sanity, psql_sanity},
+};
 
 // Misc
 use http::status::StatusCode;
@@ -425,11 +427,13 @@ fn rocket() -> _ {
   let myshield = shield::Shield::default()
     .enable(shield::Referrer::NoReferrer)
     .enable(shield::Prefetch::Off)
-    .enable(shield::XssFilter::Enable);
+    .enable(shield::XssFilter::Enable)
+    .enable(shield::Frame::Deny);
 
   rocket::custom(figment)
     .attach(MyPgDatabase::fairing())
     .attach(AdHoc::on_ignite("Postgres init", run_migrations))
+    .attach(CSP {})
     .attach(Template::fairing())
     .attach(myshield)
     .mount("/static", FileServer::from("static"))
