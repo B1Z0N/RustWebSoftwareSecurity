@@ -12,30 +12,29 @@ use rocket::{
   http::ContentType,
   response::Redirect,
   serde::{Deserialize, Serialize},
-  tokio::io::AsyncReadExt,
-  Build, Rocket,
+  shield, Build, Rocket,
 };
 use rocket_dyn_templates::{context, Template};
 use rocket_sync_db_pools::{database, postgres};
 
 // Std
-use std::{collections::HashMap, path::PathBuf};
-
-// Image processing
-extern crate image;
-use image::io::Reader as ImageReader;
-use image::GenericImageView;
+use std::collections::HashMap;
 
 // My
 #[macro_use]
 mod utils;
 use crate::utils::image::convert as image_convert;
+use crate::utils::image::read_image;
 use crate::utils::metadata::MetaData;
+use crate::utils::sanitizers::{html_sanity, psql_sanity};
 
 // Misc
 use http::status::StatusCode;
 
+////////////////////
 // Macro definitions
+////////////////////
+
 define_http!($ error_template templ);
 fn error_template(code: u16) -> Template {
   let scode = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
@@ -52,6 +51,10 @@ define_http!($ error_redirect redir);
 fn error_redirect(code: u16) -> Redirect {
   Redirect::to(format!("/error/{}", code))
 }
+
+////////////////////
+// Data
+////////////////////
 
 #[database("postgres")]
 struct MyPgDatabase(postgres::Client);
@@ -133,36 +136,17 @@ struct UploadImage<'v> {
   metadata: Option<TempFile<'v>>,
 }
 
-struct ImgData {
-  width: i32,
-  height: i32,
-  buf: Vec<u8>,
-}
-
-async fn read_image(filename: &PathBuf) -> Result<ImgData, String> {
-  let mut fh = rocket::tokio::fs::File::open(filename)
-    .await
-    .map_err(|e| format!("{e:?}"))?;
-  let mut buf = Vec::new();
-  fh.read_to_end(&mut buf)
-    .await
-    .map_err(|e| format!("{e:?}"))?;
-  let image = ImageReader::new(std::io::Cursor::new(&buf))
-    .with_guessed_format()
-    .map_err(|e| format!("{e:?}"))?
-    .decode()
-    .map_err(|e| format!("{e:?}"))?;
-  let width = i32::try_from(image.width()).map_err(|e| format!("{e:?}"))?;
-  let height = i32::try_from(image.height()).map_err(|e| format!("{e:?}"))?;
-  drop(fh);
-  return Ok(ImgData { width, height, buf });
-}
+////////////////////
+// API
+////////////////////
 
 #[post("/image/<imageid>/comments/post", data = "<comment>")]
 async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -> Redirect {
+  let user_name = redir!(res html_sanity(&comment.user_name));
+  let comment = redir!(res html_sanity(&comment.comment));
   redir!(res conn.run(move |conn| {
         conn.query("INSERT INTO comments (image_id, user_name, comment) VALUES ($1, $2, $3)", 
-            &[& imageid, &comment.user_name, &comment.comment])
+            &[&imageid, &user_name, &comment])
     }).await);
   Redirect::to(format!("/image/{}", imageid))
 }
@@ -252,7 +236,7 @@ async fn upload() -> Template {
 #[get("/search?<q>")]
 async fn search(conn: MyPgDatabase, q: String) -> Template {
   let mut results: Vec<ImageResult> = Vec::new();
-  let qs = format!("SELECT id, path, width, height, title FROM images WHERE NOT private AND (to_tsvector('simple', title) @@ plainto_tsquery('simple', '{}'))", q);
+  let qs = format!("SELECT id, path, width, height, title FROM images WHERE NOT private AND (to_tsvector('simple', title) @@ plainto_tsquery('simple', '{}'))", psql_sanity(&q.as_str()));
   let r = templ!(res conn.run(move |conn| {
         conn.query(&qs, &[])
     }).await);
@@ -438,10 +422,16 @@ fn rocket() -> _ {
   };
   let figment = rocket::Config::figment().merge(("databases", map!["postgres" => db]));
 
+  let myshield = shield::Shield::default()
+    .enable(shield::Referrer::NoReferrer)
+    .enable(shield::Prefetch::Off)
+    .enable(shield::XssFilter::Enable);
+
   rocket::custom(figment)
     .attach(MyPgDatabase::fairing())
     .attach(AdHoc::on_ignite("Postgres init", run_migrations))
     .attach(Template::fairing())
+    .attach(myshield)
     .mount("/static", FileServer::from("static"))
     .mount(
       "/",

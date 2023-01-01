@@ -1,6 +1,13 @@
+// Conversion
 use image_convert::{to_jpg, ImageResource, JPGConfig};
 use std::fs::rename;
 use std::path::{Path, PathBuf};
+
+// Image processing
+extern crate image;
+use image::io::Reader as ImageReader;
+use image::GenericImageView;
+use rocket::tokio::io::AsyncReadExt;
 
 pub fn convert(
   input_path: &Path,
@@ -22,6 +29,31 @@ pub fn convert(
   rename(output_path, input_path).map_err(|e| e.to_string())?;
 
   Ok(())
+}
+
+pub struct ImgData {
+  pub width: i32,
+  pub height: i32,
+  pub buf: Vec<u8>,
+}
+
+pub async fn read_image(filename: &PathBuf) -> Result<ImgData, String> {
+  let mut fh = rocket::tokio::fs::File::open(filename)
+    .await
+    .map_err(|e| format!("{e:?}"))?;
+  let mut buf = Vec::new();
+  fh.read_to_end(&mut buf)
+    .await
+    .map_err(|e| format!("{e:?}"))?;
+  let image = ImageReader::new(std::io::Cursor::new(&buf))
+    .with_guessed_format()
+    .map_err(|e| format!("{e:?}"))?
+    .decode()
+    .map_err(|e| format!("{e:?}"))?;
+  let width = i32::try_from(image.width()).map_err(|e| format!("{e:?}"))?;
+  let height = i32::try_from(image.height()).map_err(|e| format!("{e:?}"))?;
+  drop(fh);
+  return Ok(ImgData { width, height, buf });
 }
 
 fn get_output_path(input_path: &Path) -> Result<PathBuf, String> {

@@ -1,3 +1,15 @@
 #!/bin/sh
 
+# Terminal colors
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+CLOSING='\033[0m'
+
+FILES=$(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g')
+[ -z "$FILES" ] && exit 0
+
+echo "\n${CYAN}Running 'cargo fmt' as a pre-commit hook in '.githooks/pre-commit'.${CLOSING}\n"
+#echo "${RED}BE AWARE!BE AWARE!BE AWARE!BE AWARE!BE AWARE!BE AWARE!BE AWARE!${CLOSING}\n"
+
 cargo fmt
+echo $FILES | xargs git add

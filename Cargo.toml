@@ -12,6 +12,7 @@ image = "0.23.14"
 http = "0.2.8"
 minidom = "0.15.0"
 image-convert = "0.13.0"
+sanitize_html = "0.7.0"
 
 [dependencies.tokio]
 version = "1.22.0"
