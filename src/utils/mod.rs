@@ -1,3 +1,3 @@
-pub mod metadata;
-pub mod macros;
 pub mod image;
+pub mod macros;
+pub mod metadata;

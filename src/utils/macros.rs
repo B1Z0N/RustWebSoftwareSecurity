@@ -1,7 +1,7 @@
 // check if novalue and return something useful
 //
 // usage:
-// 
+//
 // // instead of this
 // let maybe = get_option();
 // let maybe = match maybe {
@@ -28,7 +28,7 @@ macro_rules! null {
     match $e {
       Ok(v)  => v,
       Err(e) => {
-        $f(e); 
+        $f(e);
         return $r;
       },
     }
@@ -39,7 +39,6 @@ macro_rules! null {
   }};
   (res $e:expr, $r:expr) => { null!(res $e, $r, (|e| eprintln!("{:?}", e))) };
 }
-
 
 // http code on error
 #[macro_export]
@@ -55,6 +54,7 @@ macro_rules! http_code {
   ($gen:ident res $e:expr) => { http_code!($gen res $e => 400) };
 }
 
+#[rustfmt::skip] // fix due to wrong formatting of this macro by the rustfmt tool 
 #[macro_export]
 macro_rules! define_http {
   // "dollar" hack to overcome higher-order macro limitations

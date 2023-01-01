@@ -1,8 +1,12 @@
-use std::path::{Path, PathBuf};
+use image_convert::{to_jpg, ImageResource, JPGConfig};
 use std::fs::rename;
-use image_convert::{ImageResource, JPGConfig, to_jpg};
+use std::path::{Path, PathBuf};
 
-pub fn convert(input_path: &Path, (width, height): (u16, u16), shrink_only: bool) -> Result<(), String> {
+pub fn convert(
+  input_path: &Path,
+  (width, height): (u16, u16),
+  shrink_only: bool,
+) -> Result<(), String> {
   let mut config = JPGConfig::new();
   config.width = width;
   config.height = height;
@@ -21,8 +25,10 @@ pub fn convert(input_path: &Path, (width, height): (u16, u16), shrink_only: bool
 }
 
 fn get_output_path(input_path: &Path) -> Result<PathBuf, String> {
-  let input_fname = input_path.file_name()
-    .ok_or("No image filename")?.to_str()
+  let input_fname = input_path
+    .file_name()
+    .ok_or("No image filename")?
+    .to_str()
     .ok_or("Can't convert os string to string")?;
   let output_fname = input_fname.to_string() + ".out.jpg";
   let output_path = std::env::temp_dir().join(Path::new(&output_fname));
