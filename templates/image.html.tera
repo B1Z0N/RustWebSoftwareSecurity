@@ -82,6 +82,7 @@
     </div>
     <h5 class="row">Add your own comment</h5>
     <form method="post" action="/image/{{id}}/comments/post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
         <div class="form-group">
             <label for="userName">Username</label>
             <input type="text" class="form-control form-control-plaintext" placeholder="Your name" name="user_name" id="user_name">

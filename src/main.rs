@@ -7,13 +7,14 @@ use rocket::figment::{
 };
 use rocket::{
   fairing::AdHoc,
-  form::Form,
   fs::{FileServer, TempFile},
   http::ContentType,
   response::Redirect,
   serde::{Deserialize, Serialize},
   shield, Build, Rocket,
 };
+use rocket_csrf::form::CsrfForm;
+use rocket_csrf::CsrfToken;
 use rocket_dyn_templates::{context, Template};
 use rocket_sync_db_pools::{database, postgres};
 
@@ -143,7 +144,7 @@ struct UploadImage<'v> {
 ////////////////////
 
 #[post("/image/<imageid>/comments/post", data = "<comment>")]
-async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -> Redirect {
+async fn comment(conn: MyPgDatabase, imageid: i32, comment: CsrfForm<PostComment>) -> Redirect {
   let user_name = redir!(res html_sanity(&comment.user_name));
   let comment = redir!(res html_sanity(&comment.comment));
   redir!(res conn.run(move |conn| {
@@ -154,7 +155,7 @@ async fn comment(conn: MyPgDatabase, imageid: i32, comment: Form<PostComment>) -
 }
 
 async fn img2jpg(
-  form: &mut Form<UploadImage<'_>>,
+  form: &mut CsrfForm<UploadImage<'_>>,
 ) -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<i32, String>, Redirect> {
   let imgpath = std::env::temp_dir().join(redir!(opt form.file.name() => Err));
   redir!(res form.file.persist_to(&imgpath).await => Err);
@@ -175,7 +176,7 @@ async fn img2jpg(
 }
 
 async fn metadata(
-  form: &mut Form<UploadImage<'_>>,
+  form: &mut CsrfForm<UploadImage<'_>>,
 ) -> Result<Option<impl FnOnce(&mut postgres::Transaction, i32) -> Result<(), String>>, Redirect> {
   if let Some(metadata) = &mut form.metadata {
     let name_result = metadata.name();
@@ -205,7 +206,7 @@ async fn metadata(
 }
 
 #[post("/upload", data = "<form>")]
-async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Redirect {
+async fn upload_post(conn: MyPgDatabase, mut form: CsrfForm<UploadImage<'_>>) -> Redirect {
   let imgfn = match img2jpg(&mut form).await {
     Ok(v) => v,
     Err(r) => return r,
@@ -215,6 +216,7 @@ async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Red
     Err(r) => return r,
   };
 
+  // Put it into atomic transaction
   conn
     .run(move |conn| -> Redirect {
       let mut t = null!(res conn.transaction(), Redirect::to("/error/500"));
@@ -229,10 +231,16 @@ async fn upload_post(conn: MyPgDatabase, mut form: Form<UploadImage<'_>>) -> Red
     .await
 }
 
-#[get("/upload")]
-async fn upload() -> Template {
-  let context: HashMap<String, String> = HashMap::new();
-  Template::render("upload", context)
+#[get("/upload", rank = 2)]
+async fn upload_csrf() -> Redirect {
+  Redirect::to("/upload")
+}
+
+#[get("/upload", rank = 1)]
+async fn upload(csrf_token: CsrfToken) -> Template {
+  let map: HashMap<String, String> = HashMap::new();
+  let csrf_token = csrf_token.authenticity_token();
+  Template::render("upload", context! { csrf_token, map })
 }
 
 #[get("/search?<q>")]
@@ -258,8 +266,13 @@ async fn search(conn: MyPgDatabase, q: String) -> Template {
   Template::render("search", result)
 }
 
-#[get("/image/<imageid>")]
-async fn images_name(conn: MyPgDatabase, imageid: i32) -> Template {
+#[get("/image/<imageid>", rank = 2)]
+async fn images_name_csrf(imageid: i32) -> Redirect {
+  Redirect::to(format!("/image/{}", imageid))
+}
+
+#[get("/image/<imageid>", rank = 1)]
+async fn images_name(csrf_token: CsrfToken, conn: MyPgDatabase, imageid: i32) -> Template {
   let r = templ!(res conn.run(move |conn| {
         conn.query_one("SELECT path, title, id FROM images WHERE id = $1", &[&imageid])
     }).await);
@@ -294,14 +307,11 @@ async fn images_name(conn: MyPgDatabase, imageid: i32) -> Template {
     }),
     Err(_) => None,
   };
-  let context = ImageShow {
-    title: title,
-    path: path,
-    id: id,
-    comments: comments,
-    metadata: metadata,
-  };
-  Template::render("image", context)
+  let csrf_token = csrf_token.authenticity_token();
+  Template::render(
+    "image",
+    context! { csrf_token, title, path, id, comments, metadata },
+  )
 }
 
 #[get("/img/<name>")]
@@ -436,15 +446,18 @@ fn rocket() -> _ {
     .attach(CSP {})
     .attach(Template::fairing())
     .attach(myshield)
+    .attach(rocket_csrf::Fairing::default())
     .mount("/static", FileServer::from("static"))
     .mount(
       "/",
       routes![
         images,
         upload,
+        upload_csrf,
         upload_post,
         img,
         images_name,
+        images_name_csrf,
         comment,
         search,
         error
