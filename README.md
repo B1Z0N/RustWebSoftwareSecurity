@@ -1,3 +1,7 @@
+# NOTE
+
+To run in docker: fulfill the .env file with something like in .env.exmpl
+
 # Image gallery
 
 This is a small image gallery for the web. You can upload images, search and display them and private uploads are supported as well.
