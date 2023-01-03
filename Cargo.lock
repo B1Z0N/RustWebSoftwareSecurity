@@ -1162,6 +1162,7 @@ dependencies = [
  "image",
  "image-convert",
  "minidom",
+ "rand 0.8.5",
  "rocket",
  "rocket_csrf",
  "rocket_dyn_templates",

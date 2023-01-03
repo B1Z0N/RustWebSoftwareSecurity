@@ -18,9 +18,6 @@ use rocket_csrf::CsrfToken;
 use rocket_dyn_templates::{context, Template};
 use rocket_sync_db_pools::{database, postgres};
 
-// Std
-use std::collections::HashMap;
-
 // My
 #[macro_use]
 mod utils;
@@ -33,6 +30,7 @@ use crate::utils::{
 
 // Misc
 use http::status::StatusCode;
+use rand::prelude::*;
 
 ////////////////////
 // Macro definitions
@@ -71,7 +69,7 @@ struct ImagesList {
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
 struct ImageListItem {
-  id: i32,
+  id: String,
   path: String,
   width: i32,
   height: i32,
@@ -83,7 +81,7 @@ struct ImageListItem {
 struct ImageShow {
   title: String,
   path: String,
-  id: i32,
+  id: String,
   comments: Vec<ImageComment>,
   metadata: Option<ImageMetadata>,
 }
@@ -91,7 +89,7 @@ struct ImageShow {
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
 struct ImageResult {
-  id: i32,
+  id: String,
   title: String,
   path: String,
   width: i32,
@@ -144,19 +142,20 @@ struct UploadImage<'v> {
 ////////////////////
 
 #[post("/image/<imageid>/comments/post", data = "<comment>")]
-async fn comment(conn: MyPgDatabase, imageid: i32, comment: CsrfForm<PostComment>) -> Redirect {
+async fn comment(conn: MyPgDatabase, imageid: String, comment: CsrfForm<PostComment>) -> Redirect {
   let user_name = redir!(res html_sanity(&comment.user_name));
   let comment = redir!(res html_sanity(&comment.comment));
+  let image_id = imageid.clone();
   redir!(res conn.run(move |conn| {
         conn.query("INSERT INTO comments (image_id, user_name, comment) VALUES ($1, $2, $3)", 
-            &[&imageid, &user_name, &comment])
+            &[&image_id, &user_name, &comment])
     }).await);
   Redirect::to(format!("/image/{}", imageid))
 }
 
 async fn img2jpg(
   form: &mut CsrfForm<UploadImage<'_>>,
-) -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<i32, String>, Redirect> {
+) -> Result<impl FnOnce(&mut postgres::Transaction) -> Result<String, String>, Redirect> {
   let imgpath = std::env::temp_dir().join(redir!(opt form.file.name() => Err));
   redir!(res form.file.persist_to(&imgpath).await => Err);
   redir!(res image_convert(imgpath.as_path(), (2048, 2048), true) => Err);
@@ -164,8 +163,12 @@ async fn img2jpg(
   redir!(res rocket::tokio::fs::remove_file(&imgpath).await => Err);
 
   let title = form.title.clone();
-  let path = String::from(redir!(opt form.file.name() => Err));
   let private = form.private.clone();
+  let path = format!(
+    "{}{}",
+    String::from(redir!(opt form.file.name() => Err)),
+    suffix()
+  );
 
   return Ok(move |transaction: &mut postgres::Transaction| {
     let res = transaction.query(
@@ -173,11 +176,17 @@ async fn img2jpg(
             &[&title, &path, &img.width, &img.height, &private, &img.buf]).map_err(|e| e.to_string())?;
     return Ok(res.get(0).ok_or("Can't get id while inserting!")?.get(0));
   });
+
+  fn suffix() -> String {
+    let mut rng = rand::thread_rng();
+    rng.gen::<u16>().to_string()
+  }
 }
 
 async fn metadata(
   form: &mut CsrfForm<UploadImage<'_>>,
-) -> Result<Option<impl FnOnce(&mut postgres::Transaction, i32) -> Result<(), String>>, Redirect> {
+) -> Result<Option<impl FnOnce(&mut postgres::Transaction, &String) -> Result<(), String>>, Redirect>
+{
   if let Some(metadata) = &mut form.metadata {
     let name_result = metadata.name();
     if name_result.is_some() {
@@ -190,7 +199,7 @@ async fn metadata(
 
       redir!(res rocket::tokio::fs::remove_file(&path).await => Err);
       return Ok(Some(
-        move |transaction: &mut postgres::Transaction, id: i32| {
+        move |transaction: &mut postgres::Transaction, id: &String| {
           transaction.query(
                     "INSERT INTO metadata (image_id, creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", 
@@ -222,7 +231,7 @@ async fn upload_post(conn: MyPgDatabase, mut form: CsrfForm<UploadImage<'_>>) ->
       let mut t = null!(res conn.transaction(), Redirect::to("/error/500"));
       let id = null!(res imgfn(&mut t), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
       if let Some(mdfn) = metadatafn {
-        null!(res mdfn(&mut t, id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
+        null!(res mdfn(&mut t, &id), { t.rollback().unwrap_or(()); Redirect::to("/error/500") });
       }
 
       null!(res t.commit(), Redirect::to("/error/500"));
@@ -238,9 +247,8 @@ async fn upload_csrf() -> Redirect {
 
 #[get("/upload", rank = 1)]
 async fn upload(csrf_token: CsrfToken) -> Template {
-  let map: HashMap<String, String> = HashMap::new();
   let csrf_token = csrf_token.authenticity_token();
-  Template::render("upload", context! { csrf_token, map })
+  Template::render("upload", context! { csrf_token })
 }
 
 #[get("/search?<q>")]
@@ -267,21 +275,23 @@ async fn search(conn: MyPgDatabase, q: String) -> Template {
 }
 
 #[get("/image/<imageid>", rank = 2)]
-async fn images_name_csrf(imageid: i32) -> Redirect {
+async fn images_name_csrf(imageid: String) -> Redirect {
   Redirect::to(format!("/image/{}", imageid))
 }
 
 #[get("/image/<imageid>", rank = 1)]
-async fn images_name(csrf_token: CsrfToken, conn: MyPgDatabase, imageid: i32) -> Template {
+async fn images_name(csrf_token: CsrfToken, conn: MyPgDatabase, imageid: String) -> Template {
+  let image_id = imageid.clone();
   let r = templ!(res conn.run(move |conn| {
-        conn.query_one("SELECT path, title, id FROM images WHERE id = $1", &[&imageid])
+        conn.query_one("SELECT path, title, id FROM images WHERE id = $1", &[&image_id])
     }).await);
   let path: String = r.get(0);
   let title: String = r.get(1);
-  let id: i32 = r.get(2);
+  let id: String = r.get(2);
 
+  let image_id = imageid.clone();
   let metadata_result = conn.run(move |conn| {
-        conn.query_one("SELECT creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space FROM metadata WHERE image_id = $1", &[&imageid])
+        conn.query_one("SELECT creationtime, camera_make, camera_model, orientation, horizontal_ppi, vertical_ppi, shutter_speed, color_space FROM metadata WHERE image_id = $1", &[&image_id])
     }).await;
 
   let comment_result = templ!(res conn.run(move |conn| {
@@ -369,8 +379,8 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
   let queries = [
     r#"
         CREATE TABLE IF NOT EXISTS images (
-            id SERIAL UNIQUE, 
-            path VARCHAR(150) NOT NULL, 
+            id TEXT PRIMARY KEY DEFAULT gen_random_uuid(), 
+            path VARCHAR(150) NOT NULL,
             width INTEGER NOT NULL, 
             height INTEGER NOT NULL, 
             title VARCHAR(200) NOT NULL, 
@@ -384,16 +394,15 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
             "#,
     r#"
         CREATE TABLE IF NOT EXISTS comments (
-            image_id INTEGER, 
+            image_id TEXT, 
             user_name VARCHAR(150), 
             comment VARCHAR(300), 
             CONSTRAINT fk_comment_image 
-            FOREIGN KEY (image_id) 
-            REFERENCES images(id))
+            FOREIGN KEY (image_id) REFERENCES images(id))
             "#,
     r#"
         CREATE TABLE IF NOT EXISTS metadata (
-            image_id INTEGER, 
+            image_id TEXT, 
             creationTime FLOAT, 
             camera_make VARCHAR(10000), 
             camera_model VARCHAR (10000), 
@@ -403,8 +412,7 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
             shutter_speed FLOAT, 
             color_space VARCHAR(20), 
             CONSTRAINT fk_metadata_images 
-                FOREIGN KEY (image_id) 
-                REFERENCES images(id))
+            FOREIGN KEY (image_id) REFERENCES images(id))
             "#,
   ];
   let handle = MyPgDatabase::get_one(&rocket)

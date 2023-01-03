@@ -14,6 +14,7 @@ minidom = "0.15.0"
 image-convert = "0.13.0"
 sanitize_html = "0.7.0"
 rocket_csrf = { git = "https://github.com/B1Z0N/rocket_csrf", branch = "csrf-form", version = "0.3.0" }
+rand = "0.8.5"
 
 [dependencies.tokio]
 version = "1.22.0"
