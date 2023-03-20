@@ -1,4 +1,4 @@
-from b1z0n/magick-rust
+FROM b1z0n/magick-rust
 
 COPY Cargo.toml /src/
 COPY src /src/src/
