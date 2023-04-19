@@ -1,4 +1,10 @@
-# How to run
+# What's in it?
+
+That's my rust software security assignment during my major at University of Twente 🇳🇱. I was supposed to write a secure web image gallery.
+
+(spoiler: and I did it!)
+
+# How to run?
 
 Using Docker:
 
