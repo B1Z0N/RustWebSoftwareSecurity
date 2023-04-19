@@ -17,7 +17,7 @@ rocket_csrf = { git = "https://github.com/B1Z0N/rocket_csrf", branch = "csrf-for
 rand = "0.8.5"
 
 [dependencies.tokio]
-version = "1.22.0"
+version = "1.24.2"
 features = ["process"]
 
 [dependencies.rocket_sync_db_pools]
